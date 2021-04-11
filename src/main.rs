@@ -1,16 +1,17 @@
 use anyhow::Result;
 use gio::prelude::*;
-use once_cell::unsync::Lazy;
 use serde::Deserialize;
 use std::path::PathBuf;
 use structopt::StructOpt;
 use swayipc::{Connection, Event, EventStream, EventType, Node, WindowChange};
 
 fn wait_new_window(events: &mut EventStream) -> Result<Node> {
+    log::debug!("wait for window:");
     while let Some(event) = events.next() {
         match event? {
             Event::Window(w) => match w.change {
                 WindowChange::New => {
+                    log::debug!("new window id={} app_id={:?}", w.container.id, w.container.app_id);
                     return Ok(w.container);
                 }
                 _ => {}
@@ -30,6 +31,7 @@ fn wait_window_focus(events: &mut EventStream, id: i64) -> Result<Node> {
                 }
                 match w.change {
                     WindowChange::Focus => {
+                        log::debug!("focus window id={} app_id={:?}", w.container.id, w.container.app_id);
                         return Ok(w.container);
                     }
                     _ => {}
@@ -42,6 +44,7 @@ fn wait_window_focus(events: &mut EventStream, id: i64) -> Result<Node> {
 }
 
 fn spawn(app: &str) -> Result<()> {
+    log::debug!("spawn: '{}'", app);
     let app = gio::DesktopAppInfo::new(app).ok_or_else(|| anyhow::anyhow!("no app"))?;
     app.launch_uris(&[], Some(&gio::AppLaunchContext::new()))?;
     Ok(())
