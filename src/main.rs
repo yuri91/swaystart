@@ -83,8 +83,13 @@ impl std::fmt::Display for LayoutStyle {
         write!(f, "{}", style)
     }
 }
+
+const fn f64_one() -> f64 {
+    1.
+}
 #[derive(Debug, Deserialize)]
 struct Slot {
+    #[serde(default = "f64_one")]
     size: f64,
     content: SlotContent,
 }
