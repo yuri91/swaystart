@@ -1,0 +1,38 @@
+{
+  "name": "DP-2",
+  "workspaces": [
+    {
+      "name": "main",
+      "style": "splitv",
+      "layout": {
+        "style": "splitv",
+        "slots": [
+          {
+            "size": 2,
+            "content": "Alacritty"
+          },
+          {
+            "size": 1,
+            "content": {
+              "style": "splith",
+              "slots": [
+                {
+                  "size": 1,
+                  "content": "Alacritty"
+                },
+                {
+                  "size": 1,
+                  "content": "Alacritty"
+                }
+              ]
+            }
+          },
+          {
+            "size": 1,
+            "content": "Alacritty"
+          }
+        ]
+      }
+    }
+  ]
+}
