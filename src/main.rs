@@ -213,7 +213,10 @@ impl LayoutVisitor for LayoutBuilder {
         let dim = match layout.style {
             LayoutStyle::Splitv => "height",
             LayoutStyle::Splith => "width",
-            LayoutStyle::Tabbed => return Ok(()),
+            LayoutStyle::Tabbed => {
+                self.run("focus parent")?;
+                return Ok(());
+            },
         };
         let denom = layout.slots.iter().fold(0., |acc, el| acc + el.size);
         let mut nodes = Vec::new();
