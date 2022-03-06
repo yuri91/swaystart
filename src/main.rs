@@ -273,6 +273,10 @@ fn main(opt: Opt) -> Result<()> {
     let conf = std::fs::read_to_string(opt.layout_file)?;
     let output: Output = serde_json::from_str(&conf)?;
 
+    if let Some(home) = dirs::home_dir() {
+        std::env::set_current_dir(home)?;
+    }
+
     let mut builder = LayoutBuilder::new()?;
     builder.visit_output(&output)?;
 
