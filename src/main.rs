@@ -2,7 +2,7 @@ use anyhow::Result;
 use gio::prelude::*;
 use serde::Deserialize;
 use std::path::PathBuf;
-use structopt::StructOpt;
+use clap::Parser;
 use swayipc::{Connection, Event, EventStream, EventType, Node, WindowChange};
 
 fn wait_new_window(events: &mut EventStream) -> Result<Node> {
@@ -46,7 +46,9 @@ fn wait_window_focus(events: &mut EventStream, id: i64) -> Result<Node> {
 fn spawn(app: &str) -> Result<()> {
     log::debug!("spawn: '{}'", app);
     let app = gio::DesktopAppInfo::new(app).ok_or_else(|| anyhow::anyhow!("no app"))?;
-    app.launch_uris(&[], Some(&gio::AppLaunchContext::new()))?;
+    let ctx = gio::AppLaunchContext::new();
+    log::debug!("env: {:?}", ctx.environment());
+    app.launch_uris(&[], Some(&ctx))?;
     Ok(())
 }
 
@@ -254,23 +256,24 @@ impl LayoutVisitor for LayoutBuilder {
     }
 }
 
-#[derive(Debug, StructOpt)]
-struct Opt {
-    #[structopt(short, long)]
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value = "false")]
     debug: bool,
-    #[structopt(parse(from_os_str))]
+    #[arg(short, long)]
     layout_file: PathBuf,
 }
 
-#[paw::main]
-fn main(opt: Opt) -> Result<()> {
+fn main() -> Result<()> {
+    let args = Args::parse();
     let mut log_builder = pretty_env_logger::formatted_builder();
-    if opt.debug {
+    if args.debug {
         log_builder.filter_level(log::LevelFilter::Debug);
     }
     log_builder.init();
 
-    let conf = std::fs::read_to_string(opt.layout_file)?;
+    let conf = std::fs::read_to_string(args.layout_file)?;
     let output: Output = serde_json::from_str(&conf)?;
 
     if let Some(home) = dirs::home_dir() {
