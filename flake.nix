@@ -29,6 +29,8 @@
       root = ./.;
       buildInputs = with pkgs; [
         glib
+        libxkbcommon
+        wayland
       ];
       nativeBuildInputs = with pkgs; [
         pkg-config

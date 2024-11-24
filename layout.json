@@ -9,7 +9,10 @@
         "slots": [
           {
             "size": 2,
-            "content": "Alacritty"
+            "content": {
+              "app": "org.freecadweb.FreeCAD",
+              "id": "FreeCAD"
+            }
           },
           {
             "size": 1,
@@ -18,18 +21,18 @@
               "slots": [
                 {
                   "size": 1,
-                  "content": "Alacritty"
+                  "content": "kitty"
                 },
                 {
                   "size": 1,
-                  "content": "Alacritty"
+                  "content": "org.kde.okular"
                 }
               ]
             }
           },
           {
             "size": 1,
-            "content": "Alacritty"
+            "content": "BambuStudio"
           }
         ]
       }

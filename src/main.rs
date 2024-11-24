@@ -1,17 +1,24 @@
 use anyhow::Result;
-use gio::prelude::*;
-use serde::Deserialize;
-use std::path::PathBuf;
 use clap::Parser;
+use gio::prelude::*;
+use placeholder::ClientHandle;
+use serde::Deserialize;
+use std::{collections::HashMap, path::PathBuf};
 use swayipc::{Connection, Event, EventStream, EventType, Node, WindowChange};
 
-fn wait_new_window(events: &mut EventStream) -> Result<Node> {
+mod placeholder;
+
+fn wait_new_window(events: &mut EventStream, app_id: &str) -> Result<Node> {
     log::debug!("wait for window:");
     while let Some(event) = events.next() {
         match event? {
             Event::Window(w) => match w.change {
-                WindowChange::New => {
-                    log::debug!("new window id={} app_id={:?}", w.container.id, w.container.app_id);
+                WindowChange::New if w.container.app_id.as_deref() == Some(app_id) => {
+                    log::debug!(
+                        "new window id={} app_id={:?}",
+                        w.container.id,
+                        w.container.app_id
+                    );
                     return Ok(w.container);
                 }
                 _ => {}
@@ -31,7 +38,11 @@ fn wait_window_focus(events: &mut EventStream, id: i64) -> Result<Node> {
                 }
                 match w.change {
                     WindowChange::Focus => {
-                        log::debug!("focus window id={} app_id={:?}", w.container.id, w.container.app_id);
+                        log::debug!(
+                            "focus window id={} app_id={:?}",
+                            w.container.id,
+                            w.container.app_id
+                        );
                         return Ok(w.container);
                     }
                     _ => {}
@@ -45,7 +56,7 @@ fn wait_window_focus(events: &mut EventStream, id: i64) -> Result<Node> {
 
 fn spawn(app: &str) -> Result<()> {
     log::debug!("spawn: '{}'", app);
-    let app = gio::DesktopAppInfo::new(app).ok_or_else(|| anyhow::anyhow!("no app"))?;
+    let app = gio::DesktopAppInfo::new(app).ok_or_else(|| anyhow::anyhow!("no app: {app}"))?;
     let ctx = gio::AppLaunchContext::new();
     log::debug!("env: {:?}", ctx.environment());
     app.launch_uris(&[], Some(&ctx))?;
@@ -100,6 +111,7 @@ struct Slot {
 enum SlotContent {
     Container(Layout),
     App(String),
+    AppWithId { app: String, id: String },
 }
 
 trait LayoutVisitor {
@@ -133,19 +145,22 @@ trait LayoutVisitor {
                 self.visit_layout(c)?;
             }
             SlotContent::App(ref a) => {
-                self.visit_app(a)?;
+                self.visit_app(a, a)?;
+            }
+            SlotContent::AppWithId { ref app, ref id } => {
+                self.visit_app(&app, &id)?;
             }
         }
         Ok(())
     }
-    fn visit_app(&mut self, app: &str) -> Result<()> {
-        self.on_app(app)?;
+    fn visit_app(&mut self, app: &str, id: &str) -> Result<()> {
+        self.on_app(app, id)?;
         Ok(())
     }
     fn on_slot(&mut self, _slot: &Slot) -> Result<()> {
         Ok(())
     }
-    fn on_app(&mut self, _app: &str) -> Result<()> {
+    fn on_app(&mut self, _app: &str, _id: &str) -> Result<()> {
         Ok(())
     }
     fn on_layout_enter(&mut self, _layout: &Layout) -> Result<()> {
@@ -165,6 +180,8 @@ trait LayoutVisitor {
 struct LayoutBuilder {
     conn: Connection,
     events: EventStream,
+    placeholder: placeholder::ClientHandle,
+    mapping: HashMap<String, Vec<i64>>,
 }
 
 impl LayoutBuilder {
@@ -183,6 +200,8 @@ impl LayoutBuilder {
         let builder = LayoutBuilder {
             conn: Connection::new()?,
             events: Connection::new()?.subscribe(&subs)?,
+            placeholder: ClientHandle::new(),
+            mapping: HashMap::new(),
         };
         Ok(builder)
     }
@@ -218,7 +237,7 @@ impl LayoutVisitor for LayoutBuilder {
             LayoutStyle::Tabbed => {
                 self.run("focus parent")?;
                 return Ok(());
-            },
+            }
         };
         let denom = layout.slots.iter().fold(0., |acc, el| acc + el.size);
         let mut nodes = Vec::new();
@@ -248,10 +267,115 @@ impl LayoutVisitor for LayoutBuilder {
         self.run("focus parent")?;
         Ok(())
     }
-    fn on_app(&mut self, app: &str) -> Result<()> {
-        spawn(&format!("{}.desktop", app))?;
-        let node = wait_new_window(&mut self.events)?;
+    fn on_app(&mut self, app: &str, id: &str) -> Result<()> {
+        let app_info = gio::DesktopAppInfo::new(&format!("{app}.desktop"))
+            .ok_or_else(|| anyhow::anyhow!("no app: {}", app))?;
+        let placeholder_app_id = format!("swaystart-{}", id);
+        self.placeholder
+            .new_window(app_info.display_name().as_str(), &placeholder_app_id);
+        let node = wait_new_window(&mut self.events, &placeholder_app_id)?;
+        self.mapping.entry(id.to_owned()).or_default().push(node.id);
         wait_window_focus(&mut self.events, node.id)?;
+        Ok(())
+    }
+}
+
+struct Spawner {}
+impl LayoutVisitor for Spawner {
+    fn on_app(&mut self, app: &str, _id: &str) -> Result<()> {
+        spawn(&format!("{}.desktop", app))?;
+        Ok(())
+    }
+}
+
+struct Swapper {
+    conn: Connection,
+    events: EventStream,
+    mapping: HashMap<String, Vec<i64>>,
+}
+
+impl Swapper {
+    fn new(mapping: HashMap<String, Vec<i64>>) -> Result<Self> {
+        let subs = [EventType::Window];
+        let swapper = Swapper {
+            conn: Connection::new()?,
+            events: Connection::new()?.subscribe(&subs)?,
+            mapping,
+        };
+        Ok(swapper)
+    }
+    fn run(&mut self, cmd: &str) -> Result<()> {
+        log::debug!("cmd: '{}'", cmd);
+        for res in self.conn.run_command(cmd)? {
+            res?;
+        }
+        Ok(())
+    }
+    fn swap(&mut self) -> Result<()> {
+        let mut count = 0;
+        for v in self.mapping.values() {
+            count += v.len();
+        }
+        while let Some(event) = self.events.next() {
+            log::debug!("{:?}", event);
+            match event? {
+                Event::Window(w) => match w.change {
+                    WindowChange::Close => {
+                        if let Some(app_id) = w.container.app_id.as_deref() {
+                            if let Some(id) = app_id.strip_prefix("swaystart-") {
+                                if let Some(v) = self.mapping.get_mut(id) {
+                                    let idx = v.iter().position(|i| *i == w.container.id);
+                                    if let Some(idx) = idx {
+                                        v.swap_remove(idx);
+                                        count -= 1;
+                                        if count == 0 {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    WindowChange::New => {
+                        println!("{:?}", w);
+                        let matcher = if w.container.floating.is_some() {
+                            None
+                        } else if w
+                            .container
+                            .window_properties
+                            .as_ref()
+                            .is_some_and(|p| p.window_type.as_deref() != Some("normal"))
+                        {
+                            None
+                        } else if let Some(props) = w.container.window_properties.as_ref() {
+                            props.class.as_deref()
+                        } else {
+                            w.container.app_id.as_deref()
+                        };
+                        if let Some(m) = matcher {
+                            if let Some(v) = self.mapping.get_mut(m) {
+                                if let Some(con_id) = v.pop() {
+                                    self.run(&format!(
+                                        "[con_id={con_id}] swap container with con_id {}",
+                                        w.container.id
+                                    ))?;
+                                    self.run(&format!("[con_id={con_id}] kill"))?;
+                                    count -= 1;
+                                    if count == 0 {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        self.run(&format!("[con_id={}] floating enable", w.container.id))?;
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+
         Ok(())
     }
 }
@@ -261,6 +385,8 @@ impl LayoutVisitor for LayoutBuilder {
 struct Args {
     #[arg(short, long, default_value = "false")]
     debug: bool,
+    #[arg(short, long, default_value = "false")]
+    spawn: bool,
     #[arg(short, long)]
     layout_file: PathBuf,
 }
@@ -282,6 +408,21 @@ fn main() -> Result<()> {
 
     let mut builder = LayoutBuilder::new()?;
     builder.visit_output(&output)?;
+
+    let LayoutBuilder {
+        placeholder,
+        mapping,
+        ..
+    } = builder;
+
+    if args.spawn {
+        let mut spawner = Spawner {};
+        spawner.visit_output(&output)?;
+    }
+    let mut swapper = Swapper::new(mapping)?;
+    swapper.swap()?;
+
+    placeholder.wait_until_idle();
 
     Ok(())
 }
