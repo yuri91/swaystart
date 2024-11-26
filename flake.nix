@@ -17,7 +17,7 @@
       overlays = [ rust-overlay.overlays.default ];
     };
     rust-build = pkgs.rust-bin.stable.latest.default.override {
-      extensions = [ "rust-src" ];
+      extensions = [ "rust-src" "rust-analyzer" ];
       targets = [];
     };
     naersk-lib = naersk.lib.${system}.override {
@@ -43,7 +43,6 @@
       packages = with pkgs; [
         git
         cargo-edit
-        rust-analyzer-unwrapped
       ];
       inputsFrom = with pkgs; [
         swaystart
