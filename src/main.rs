@@ -186,20 +186,9 @@ struct LayoutBuilder {
 
 impl LayoutBuilder {
     fn new() -> Result<LayoutBuilder> {
-        let subs = [
-            EventType::Window,
-            EventType::Workspace,
-            EventType::Mode,
-            EventType::BarConfigUpdate,
-            EventType::Binding,
-            EventType::Shutdown,
-            EventType::Tick,
-            EventType::BarStateUpdate,
-            EventType::Input,
-        ];
         let builder = LayoutBuilder {
             conn: Connection::new()?,
-            events: Connection::new()?.subscribe(&subs)?,
+            events: Connection::new()?.subscribe(&[EventType::Window])?,
             placeholder: ClientHandle::new(),
             mapping: HashMap::new(),
         };
@@ -296,10 +285,9 @@ struct Swapper {
 
 impl Swapper {
     fn new(mapping: HashMap<String, Vec<i64>>) -> Result<Self> {
-        let subs = [EventType::Window];
         let swapper = Swapper {
             conn: Connection::new()?,
-            events: Connection::new()?.subscribe(&subs)?,
+            events: Connection::new()?.subscribe(&[EventType::Window])?,
             mapping,
         };
         Ok(swapper)
