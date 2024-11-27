@@ -326,9 +326,7 @@ impl Swapper {
                     }
                     WindowChange::New => {
                         println!("{:?}", w);
-                        let matcher = if w.container.floating.is_some() {
-                            None
-                        } else if w
+                        let matcher = if w
                             .container
                             .window_properties
                             .as_ref()
