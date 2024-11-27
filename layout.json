@@ -10,7 +10,7 @@
           {
             "size": 2,
             "content": {
-              "app": "org.freecadweb.FreeCAD",
+              "app": "org.freecad.FreeCAD",
               "id": "FreeCAD"
             }
           },
