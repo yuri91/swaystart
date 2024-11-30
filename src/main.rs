@@ -1,12 +1,11 @@
 use anyhow::Result;
 use clap::Parser;
-use gio::prelude::*;
-use placeholder::ClientHandle;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf};
 use swayipc::{Connection, Event, EventStream, EventType, Node, WindowChange};
 
 mod placeholder;
+use placeholder::ClientHandle;
 
 fn wait_new_window(events: &mut EventStream, app_id: &str) -> Result<Node> {
     log::debug!("wait for window:");
@@ -54,13 +53,29 @@ fn wait_window_focus(events: &mut EventStream, id: i64) -> Result<Node> {
     anyhow::bail!("Event stream ended");
 }
 
-fn spawn(app: &str) -> Result<()> {
-    log::debug!("spawn: '{}'", app);
-    let app = gio::DesktopAppInfo::new(app).ok_or_else(|| anyhow::anyhow!("no app: {app}"))?;
-    let ctx = gio::AppLaunchContext::new();
-    log::debug!("env: {:?}", ctx.environment());
-    app.launch_uris(&[], Some(&ctx))?;
-    Ok(())
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct NodeLite {
+    /// The name of the node such as the output name or window title. For the
+    /// scratchpad, this will be __i3_scratch for compatibility with i3.
+    pub name: Option<String>,
+    /// The node type. It can be root, output, workspace, con, or floating_con.
+    #[serde(rename = "type")]
+    pub node_type: swayipc::NodeType,
+    /// The percentage of the node's parent that it takes up or null for the
+    /// root and other special nodes such as the scratchpad.
+    pub percent: Option<f64>,
+    /// The tiling children nodes for the node.
+    #[serde(default)]
+    pub nodes: Vec<NodeLite>,
+    /// (Only views) For an xdg-shell view, the name of the application, if set.
+    /// Otherwise, null.
+    pub app_id: Option<String>,
+    pub num: Option<i32>, //workspace number if `node_type` == `NodeType::Workspace`
+    /// (Only xwayland views) An object containing the title, class, instance,
+    /// window_role, window_type, and transient_for for the view.
+    pub window_properties: Option<swayipc::WindowProperties>,
+    /// (Only workspaces) Name of the output the node is located on.
+    pub output: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -184,10 +199,19 @@ struct LayoutBuilder {
     mapping: HashMap<String, Vec<i64>>,
 }
 
+fn get_tree_lite(conn: &mut Connection) -> Result<NodeLite> {
+    let tree = conn.get_tree()?;
+    let json = serde_json::to_value(tree)?;
+    let tree_lite = serde_json::from_value(json)?;
+    Ok(tree_lite)
+}
+
 impl LayoutBuilder {
     fn new() -> Result<LayoutBuilder> {
+        let mut conn = Connection::new()?;
+        println!("{:?}", get_tree_lite(&mut conn));
         let builder = LayoutBuilder {
-            conn: Connection::new()?,
+            conn,
             events: Connection::new()?.subscribe(&[EventType::Window])?,
             placeholder: ClientHandle::new(),
             mapping: HashMap::new(),
@@ -257,22 +281,12 @@ impl LayoutVisitor for LayoutBuilder {
         Ok(())
     }
     fn on_app(&mut self, app: &str, id: &str) -> Result<()> {
-        let app_info = gio::DesktopAppInfo::new(&format!("{app}.desktop"))
-            .ok_or_else(|| anyhow::anyhow!("no app: {}", app))?;
         let placeholder_app_id = format!("swaystart-{}", id);
         self.placeholder
-            .new_window(app_info.display_name().as_str(), &placeholder_app_id);
+            .new_window(&placeholder_app_id, &placeholder_app_id);
         let node = wait_new_window(&mut self.events, &placeholder_app_id)?;
         self.mapping.entry(id.to_owned()).or_default().push(node.id);
         wait_window_focus(&mut self.events, node.id)?;
-        Ok(())
-    }
-}
-
-struct Spawner {}
-impl LayoutVisitor for Spawner {
-    fn on_app(&mut self, app: &str, _id: &str) -> Result<()> {
-        spawn(&format!("{}.desktop", app))?;
         Ok(())
     }
 }
@@ -371,8 +385,6 @@ impl Swapper {
 struct Args {
     #[arg(short, long, default_value = "false")]
     debug: bool,
-    #[arg(short, long, default_value = "false")]
-    spawn: bool,
     #[arg(short, long)]
     layout_file: PathBuf,
 }
@@ -401,10 +413,6 @@ fn main() -> Result<()> {
         ..
     } = builder;
 
-    if args.spawn {
-        let mut spawner = Spawner {};
-        spawner.visit_output(&output)?;
-    }
     let mut swapper = Swapper::new(mapping)?;
     swapper.swap()?;
 
