@@ -28,7 +28,6 @@
       pname = "swaystart";
       root = ./.;
       buildInputs = with pkgs; [
-        glib
         libxkbcommon
         wayland
       ];
