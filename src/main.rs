@@ -11,52 +11,82 @@ mod visit;
 use matcher::Matchers;
 use node::*;
 use placeholder::ClientHandle;
-use visit::LayoutVisitor;
+use visit::{LayoutLiteVisitor, LayoutVisitor};
 
-fn wait_new_window(events: &mut EventStream, app_id: &str) -> Result<Node> {
-    log::debug!("wait for window:");
-    while let Some(event) = events.next() {
-        match event? {
-            Event::Window(w) => match w.change {
-                WindowChange::New if w.container.app_id.as_deref() == Some(app_id) => {
-                    log::debug!(
-                        "new window id={} app_id={:?}",
-                        w.container.id,
-                        w.container.app_id
-                    );
-                    return Ok(w.container);
-                }
-                _ => {}
-            },
-            _ => {}
-        }
+struct Cmd {
+    conn: Connection,
+}
+impl Cmd {
+    fn new() -> Result<Cmd> {
+        Ok(Self {
+            conn: Connection::new()?,
+        })
     }
-    anyhow::bail!("Event stream ended");
+    fn run(&mut self, cmd: &str) -> Result<()> {
+        log::debug!("cmd: '{}'", cmd);
+        for res in self.conn.run_command(cmd)? {
+            res?;
+        }
+        Ok(())
+    }
 }
 
-fn wait_window_focus(events: &mut EventStream, id: i64) -> Result<Node> {
-    while let Some(event) = events.next() {
-        match event? {
-            Event::Window(w) => {
-                if w.container.id != id {
-                    continue;
-                }
-                match w.change {
-                    WindowChange::Focus => {
-                        log::debug!(
-                            "focus window id={} app_id={:?}",
-                            w.container.id,
-                            w.container.app_id
-                        );
-                        return Ok(w.container);
+struct Events {
+    inner: EventStream,
+}
+impl Events {
+    fn new() -> Result<Events> {
+        Ok(Events {
+            inner: Connection::new()?.subscribe(&[EventType::Window])?,
+        })
+    }
+    fn wait_new_window(&mut self, app_id: &str) -> Result<Node> {
+        log::debug!("wait for window:");
+        while let Some(event) = self.inner.next() {
+            match event? {
+                Event::Window(w) => match w.change {
+                    WindowChange::New => {
+                        if w.container.app_id.as_deref() == Some(app_id) {
+                            log::debug!(
+                                "new window id={} app_id={:?}",
+                                w.container.id,
+                                w.container.app_id
+                            );
+                            return Ok(w.container);
+                        }
                     }
                     _ => {}
-                }
+                },
+                _ => {}
             }
-            _ => {}
         }
+        anyhow::bail!("Event stream ended");
     }
-    anyhow::bail!("Event stream ended");
+
+    fn wait_window_focus(&mut self, id: i64) -> Result<Node> {
+        while let Some(event) = self.inner.next() {
+            match event? {
+                Event::Window(w) => {
+                    if w.container.id != id {
+                        continue;
+                    }
+                    match w.change {
+                        WindowChange::Focus => {
+                            log::debug!(
+                                "focus window id={} app_id={:?}",
+                                w.container.id,
+                                w.container.app_id
+                            );
+                            return Ok(w.container);
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        anyhow::bail!("Event stream ended");
+    }
 }
 
 fn populate_swallows(n: &mut NodeLite) {
@@ -84,35 +114,88 @@ fn get_tree_lite(conn: &mut Connection) -> Result<NodeLite> {
     Ok(tree_lite)
 }
 
-struct LayoutBuilder {
-    conn: Connection,
-    events: EventStream,
+struct WorkspaceFinder {
+    workspaces: Vec<String>,
+}
+impl WorkspaceFinder {
+    fn new() -> Self {
+        Self { workspaces: vec![] }
+    }
+    fn get(self) -> Vec<String> {
+        self.workspaces
+    }
+}
+impl LayoutVisitor for WorkspaceFinder {
+    fn on_workspace(&mut self, workspace: &Node) -> Result<()> {
+        self.workspaces.push(
+            workspace
+                .name
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("workspace with no name"))?,
+        );
+        Ok(())
+    }
+}
+
+struct WorkspaceDetacher<'a> {
+    cmd: &'a mut Cmd,
+    workspaces: Vec<String>,
+    views: Vec<Node>,
+}
+impl<'a> WorkspaceDetacher<'a> {
+    fn new(cmd: &'a mut Cmd, workspaces: Vec<String>) -> Self {
+        Self {
+            cmd,
+            workspaces,
+            views: vec![],
+        }
+    }
+    fn get(self) -> Vec<Node> {
+        self.views
+    }
+}
+impl<'a> LayoutVisitor for WorkspaceDetacher<'a> {
+    fn on_workspace(&mut self, workspace: &Node) -> Result<()> {
+        for w in &self.workspaces {
+            if Some(w) == workspace.name.as_ref() {
+                return Ok(());
+            }
+        }
+        for c in &workspace.nodes {
+            self.cmd
+                .run(&format!("[con_id={}] floating enable", c.id))?;
+        }
+        Ok(())
+    }
+    fn on_view(&mut self, view: &Node) -> Result<()> {
+        self.views.push(view.clone());
+        Ok(())
+    }
+}
+
+struct LayoutBuilder<'a> {
+    cmd: &'a mut Cmd,
+    events: &'a mut Events,
     placeholder: placeholder::ClientHandle,
     matchers: Matchers,
 }
 
-impl LayoutBuilder {
-    fn new() -> Result<LayoutBuilder> {
-        let conn = Connection::new()?;
-        let builder = LayoutBuilder {
-            conn,
-            events: Connection::new()?.subscribe(&[EventType::Window])?,
+impl<'a> LayoutBuilder<'a> {
+    fn new(cmd: &'a mut Cmd, events: &'a mut Events) -> LayoutBuilder<'a> {
+        LayoutBuilder {
+            cmd,
+            events,
             placeholder: ClientHandle::new(),
             matchers: Matchers::new(),
-        };
-        Ok(builder)
-    }
-    fn run(&mut self, cmd: &str) -> Result<()> {
-        log::debug!("cmd: '{}'", cmd);
-        for res in self.conn.run_command(cmd)? {
-            res?;
         }
-        Ok(())
+    }
+    fn get(self) -> (placeholder::ClientHandle, Matchers) {
+        (self.placeholder, self.matchers)
     }
 }
-impl LayoutVisitor for LayoutBuilder {
+impl<'a> LayoutLiteVisitor for LayoutBuilder<'a> {
     fn on_output(&mut self, output: &NodeLite) -> Result<()> {
-        self.run(&format!(
+        self.cmd.run(&format!(
             "focus output {}",
             output
                 .name
@@ -122,7 +205,7 @@ impl LayoutVisitor for LayoutBuilder {
         Ok(())
     }
     fn on_workspace(&mut self, workspace: &NodeLite) -> Result<()> {
-        self.run(&format!(
+        self.cmd.run(&format!(
             "workspace {}",
             workspace
                 .name
@@ -132,7 +215,7 @@ impl LayoutVisitor for LayoutBuilder {
         Ok(())
     }
     fn on_container_enter(&mut self, con: &NodeLite) -> Result<()> {
-        self.run("splith")?;
+        self.cmd.run("splith")?;
         let layout = match con.layout {
             NodeLayout::SplitH => "splith",
             NodeLayout::SplitV => "splitv",
@@ -140,11 +223,12 @@ impl LayoutVisitor for LayoutBuilder {
             NodeLayout::Stacked => "stacked",
             _ => anyhow::bail!("usupported layout"),
         };
-        self.run(&format!("layout {}", layout))?;
+        self.cmd.run(&format!("layout {}", layout))?;
         Ok(())
     }
     fn on_container_exit(&mut self, con: &NodeLite) -> Result<()> {
         let node = self
+            .cmd
             .conn
             .get_tree()
             .unwrap()
@@ -154,7 +238,7 @@ impl LayoutVisitor for LayoutBuilder {
             NodeLayout::SplitV => ("height", node.rect.height),
             NodeLayout::SplitH => ("width", node.rect.width),
             NodeLayout::Tabbed | NodeLayout::Stacked => {
-                self.run("focus parent")?;
+                self.cmd.run("focus parent")?;
                 return Ok(());
             }
             _ => anyhow::bail!("usupported layout"),
@@ -165,45 +249,49 @@ impl LayoutVisitor for LayoutBuilder {
                 .percent
                 .ok_or_else(|| anyhow::anyhow!("missing percent field"))?;
             let size = (perc * (tot_size as f64)).floor() as i32;
-            self.run(&format!("resize set {} {} px", dim, size))?;
-            self.run("focus prev sibling")?;
+            self.cmd.run(&format!("resize set {} {} px", dim, size))?;
+            self.cmd.run("focus prev sibling")?;
         }
-        self.run("focus parent")?;
+        self.cmd.run("focus parent")?;
         Ok(())
     }
     fn on_view(&mut self, view: &NodeLite) -> Result<()> {
-        self.placeholder.new_window("swaystart", "swaystart");
-        let node = wait_new_window(&mut self.events, "swaystart")?;
-        wait_window_focus(&mut self.events, node.id)?;
+        self.placeholder
+            .new_window(view.name.as_deref().unwrap_or("swaystart"), "swaystart");
+        let node = self.events.wait_new_window("swaystart")?;
+        self.events.wait_window_focus(node.id)?;
         self.matchers.add(node.id, view.swallows.clone());
         Ok(())
     }
 }
 
-struct Swapper {
-    conn: Connection,
-    events: EventStream,
+struct Swapper<'a> {
+    cmd: &'a mut Cmd,
+    events: &'a mut Events,
     matchers: Matchers,
 }
 
-impl Swapper {
-    fn new(matchers: Matchers) -> Result<Self> {
-        let swapper = Swapper {
-            conn: Connection::new()?,
-            events: Connection::new()?.subscribe(&[EventType::Window])?,
+impl<'a> Swapper<'a> {
+    fn new(cmd: &'a mut Cmd, events: &'a mut Events, matchers: Matchers) -> Self {
+        Swapper {
+            cmd,
+            events,
             matchers,
-        };
-        Ok(swapper)
-    }
-    fn run(&mut self, cmd: &str) -> Result<()> {
-        log::debug!("cmd: '{}'", cmd);
-        for res in self.conn.run_command(cmd)? {
-            res?;
         }
+    }
+    fn do_swap(&mut self, id1: i64, id2: i64) -> Result<()> {
+        self.cmd
+            .run(&format!("[con_id={id1}] swap container with con_id {id2}"))?;
+        self.cmd.run(&format!("[con_id={id1}] kill"))?;
         Ok(())
     }
-    fn swap(&mut self) -> Result<()> {
-        while let Some(event) = self.events.next() {
+    fn swap(&mut self, prev: &[Node]) -> Result<()> {
+        for p in prev {
+            if let Some(id) = self.matchers.consume(&p) {
+                self.do_swap(id, p.id)?;
+            }
+        }
+        while let Some(event) = self.events.inner.next() {
             log::debug!("{:?}", event);
             match event? {
                 Event::Window(w) => match w.change {
@@ -216,15 +304,8 @@ impl Swapper {
                         }
                     }
                     WindowChange::New => {
-                        println!("{:?}", w);
                         if let Some(id) = self.matchers.consume(&w.container) {
-                            self.run(&format!(
-                                "[con_id={id}] swap container with con_id {}",
-                                w.container.id
-                            ))?;
-                            self.run(&format!("[con_id={id}] kill"))?;
-                        } else {
-                            self.run(&format!("[con_id={}] floating enable", w.container.id))?;
+                            self.do_swap(id, w.container.id)?;
                         }
                     }
                     _ => {}
@@ -266,19 +347,26 @@ fn main() -> Result<()> {
     }
 
     let conf = std::fs::read_to_string(args.layout_file)?;
-    let tree: NodeLite = serde_json::from_str(&conf)?;
+    let conf_tree: NodeLite = serde_json::from_str(&conf)?;
 
-    let mut builder = LayoutBuilder::new()?;
-    builder.visit_node(&tree)?;
+    let mut cmd = Cmd::new()?;
+    let mut events = Events::new()?;
 
-    let LayoutBuilder {
-        placeholder,
-        matchers,
-        ..
-    } = builder;
+    let tree = cmd.conn.get_tree()?;
+    let mut finder = WorkspaceFinder::new();
+    finder.visit_node(&tree)?;
 
-    let mut swapper = Swapper::new(matchers)?;
-    swapper.swap()?;
+    let mut detacher = WorkspaceDetacher::new(&mut cmd, finder.get());
+    detacher.visit_node(&tree)?;
+    let detached = detacher.get();
+
+    let mut builder = LayoutBuilder::new(&mut cmd, &mut events);
+    builder.visit_node(&conf_tree)?;
+
+    let (placeholder, matchers) = builder.get();
+
+    let mut swapper = Swapper::new(&mut cmd, &mut events, matchers);
+    swapper.swap(&detached)?;
 
     placeholder.wait_until_idle();
 
