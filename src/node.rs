@@ -62,7 +62,7 @@ pub struct NodeLite {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_properties: Option<WindowPropertiesLite>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub swallows: Vec<Matcher>,
 }
 

@@ -54,3 +54,50 @@ macro_rules! impl_visitor {
 }
 impl_visitor!(LayoutLiteVisitor, &NodeLite);
 impl_visitor!(LayoutVisitor, &Node);
+
+pub trait Tree {
+    fn children<'a>(&'a self) -> std::slice::Iter<'a, Self> where Self: Sized;
+    fn is_leaf(&self) -> bool;
+}
+impl Tree for Node {
+    fn children<'a>(&'a self) -> std::slice::Iter<'a, Self> {
+        self.nodes.iter()
+    }
+    fn is_leaf(&self) -> bool {
+        self.nodes.is_empty()
+    }
+}
+impl Tree for NodeLite {
+    fn children<'a>(&'a self) -> std::slice::Iter<'a, Self> {
+        self.nodes.iter()
+    }
+    fn is_leaf(&self) -> bool {
+        self.nodes.is_empty()
+    }
+}
+
+pub fn iter_tree<'a, T: Tree>(t: &'a T) -> impl Iterator<Item = &'a T> {
+    fn traverse_depth<'b, T: Tree>(start: &'b T, stack: &mut Vec<std::slice::Iter<'b, T>>) -> Option<std::slice::Iter<'b, T>> {
+        let mut node = start;
+        loop {
+            if node.is_leaf() {
+                break Some(node.children());
+            } else {
+                stack.push(node.children());
+            }
+            node = stack.last_mut().unwrap().next()?;
+        }
+    }
+    let mut stack = Vec::new();
+    let mut leaf = traverse_depth(t, &mut stack);
+    std::iter::from_fn(move || loop {
+        if let Some(next) = leaf.as_mut()?.next() {
+            break Some(next);
+        }
+        if let Some(next) = stack.last_mut()?.next() {
+            leaf = traverse_depth(next, &mut stack);
+        } else {
+            stack.pop();
+        }
+    })
+}
